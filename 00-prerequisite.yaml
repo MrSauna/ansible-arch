@@ -1,0 +1,20 @@
+---
+
+- name: Prerequisite
+  hosts: archiso
+  tasks:
+
+    - name: Verify efi
+      ansible.builtin.stat:
+        path: /sys/firmware/efi/efivars
+      register: efivars_stat
+      failed_when: efivars_stat.stat.exists == False
+
+    - name: Check internet connection
+      ansible.builtin.wait_for:
+        host: 1.1.1.1
+        port: 53
+
+    - name: Turn on ntp
+      ansible.builtin.command: timedatectl set-ntp true
+      changed_when: true # silence linter

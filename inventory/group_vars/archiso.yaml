@@ -1,0 +1,21 @@
+---
+ansible_user: root
+boot_size: 512MiB
+swap_size: 4GiB
+pacstrap_packages:
+  - base
+  - linux
+  - linux-firmware
+  - linux-zen
+  - linux-zen-headers
+  - base-devel
+  - git
+  - networkmanager
+  - openssh
+  - btrfs-progs
+  - sudo
+  - zsh
+  - neovim
+authorized_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICJtULfFK/kZlJjtACQ9CPrGCRPwrK5mXCH6my/qgPr+ eemeli@5600x
+user_account: eemeli

@@ -1,0 +1,127 @@
+---
+
+- name: Partition
+  hosts: archiso
+  tasks:
+
+    - name: Make /boot partition
+      community.general.parted:
+        device: "{{ install_disk }}"
+        number: 1
+        label: gpt
+        state: present
+        name: esp
+        fs_type: fat32
+        part_end: "{{ boot_size }}" # Seems to start at 1049KiB and 512MiB results in size ~511MiB
+        flags: boot
+
+    - name: Run efi filesystem
+      community.general.filesystem:
+        fstype: vfat
+        dev: "{{ install_disk }}1"
+        opts: -F 32
+
+    - name: Make crypt partition
+      community.general.parted:
+        device: "{{ install_disk }}"
+        number: 2
+        label: gpt
+        name: crypt
+        state: present
+        part_start: "{{ boot_size }}"
+
+    - name: Run Cryptsetup
+      community.crypto.luks_device:
+        device: "{{ install_disk }}2"
+        passphrase: "{{ cryptroot_password }}"
+
+    - name: Open cryptroot
+      community.crypto.luks_device:
+        device: "{{ install_disk }}2"
+        passphrase: "{{ cryptroot_password }}"
+        state: opened
+        name: cryptroot
+
+    - name: Make btrfs filesystem
+      community.general.filesystem:
+        fstype: btrfs
+        dev: "/dev/mapper/cryptroot"
+        opts: -L broot
+
+    - name: Create broot mountpoint
+      ansible.builtin.file:
+        path: /mnt/broot
+        state: directory
+        mode: 0700
+
+    - name: Mount broot
+      ansible.posix.mount:
+        path: /mnt/broot
+        src: /dev/mapper/cryptroot
+        fstype: btrfs
+        state: mounted
+
+    - name: Create btrfs subvolumes
+      ansible.builtin.command: btrfs subvolume create /mnt/broot/"{{ item }}"
+      register: r
+      failed_when: >
+        r.rc != 0 and
+        "ERROR: target path already exists" not in r.stderr
+      changed_when: r.rc == 0
+      loop:
+        - "@"
+        - "@home"
+        - "@pkgcache"
+        - "@swap"
+
+    - name: Mount subvolumes
+      ansible.posix.mount:
+        path: "/mnt/root{{ item.path }}"
+        src: /dev/mapper/cryptroot
+        fstype: btrfs
+        opts: "subvol={{ item.subvol }}"
+        state: mounted
+      loop:
+        - { path: /, subvol: "@"}
+        - { path: /home, subvol: "@home"}
+        - { path: /var/cache/pacman/pkg, subvol: "@pkgcache"}
+        - { path: /mnt/swap, subvol: "@swap"}
+
+    - name: Mount boot
+      ansible.posix.mount:
+        path: /mnt/root/boot
+        src: "{{ install_disk }}1"
+        fstype: vfat
+        state: mounted
+
+    - name: "Set +C/No_COW & 0700 for @swap"
+      ansible.builtin.file:
+        path: /mnt/broot/@swap
+        mode: 0700
+        attributes: +C
+
+    - name: Check if swapfile exists
+      ansible.builtin.stat:
+        path: /mnt/root/mnt/swap/swapfile
+      register: swapfile_stat
+
+    - name: Create swapfile reservation
+      ansible.builtin.command: "dd if=/dev/zero of=/mnt/root/mnt/swap/swapfile bs=1M count={{ swap_size }}"
+      when: not swapfile_stat.stat.exists
+
+    - name: Set swapfile permissions
+      ansible.builtin.file:
+        path: /mnt/root/mnt/swap/swapfile
+        mode: 0600
+
+    - name: Run mkswap
+      ansible.builtin.command: mkswap -U clear /mnt/root/mnt/swap/swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Run swapon
+      ansible.builtin.command: swapon /mnt/root/mnt/swap/swapfile
+      register: r
+      failed_when: >
+        r.rc != 0 and
+        "swapon failed: Device or resource busy" not in r.stderr
+      changed_when: r.rc == 0

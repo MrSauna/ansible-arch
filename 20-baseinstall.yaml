@@ -1,0 +1,157 @@
+---
+
+- name: Base install
+  hosts: archiso
+  tasks:
+
+    - name: Configure mirrors
+      ansible.builtin.copy:
+        src: files/mirrorlist
+        dest: /etc/pacman.d/mirrorlist
+        mode: 0644
+
+    - name: Run pacstrap with pacstrap_packages
+      ansible.builtin.command:
+        cmd: "pacstrap /mnt/root {{ pacstrap_packages | join(' ') }}"
+        # creates: /mnt/root/usr/bin/pacman
+      changed_when: true
+
+    - name: Register genfstab
+      ansible.builtin.shell:
+        cmd: genfstab -U /mnt/root
+      register: genfstab_output
+
+    - name: Install fstab
+      ansible.builtin.blockinfile:
+        block: "{{ genfstab_output.stdout }}"
+        path: /mnt/root/etc/fstab
+        marker: "# {mark} arch-install/20-baseinstall managed block"
+
+    - name: Run chroot; set timezone
+      ansible.builtin.command:
+        cmd: arch-chroot /mnt/root ln -sf /usr/share/zoneinfo/Europe/Helsinki /etc/localtime
+        creates: /mnt/root/etc/localtime
+
+    - name: Run chroot; hwclock
+      ansible.builtin.command:
+        cmd: arch-chroot /mnt/root hwclock --systohc
+        creates: /mnt/root/etc/adjtime
+
+    - name: Run chroot; enable systemd services
+      ansible.builtin.command:
+        cmd: "arch-chroot /mnt/root systemctl enable {{ item }}"
+        creates: "/mnt/root/etc/systemd/system/multi-user.target.wants/{{ item }}.service"
+      loop:
+        - sshd
+        - NetworkManager
+
+    - name: Configure sshd
+      ansible.builtin.blockinfile:
+        path: /mnt/root/etc/ssh/sshd_config
+        marker: "# {mark} arch-install/20-baseinstall managed block"
+        block: |
+          PasswordAuthentication no
+          AuthenticationMethods publickey
+
+    - name: Copy locale.gen
+      ansible.builtin.copy:
+        src: files/locale.gen
+        dest: /mnt/root/etc/locale.gen
+        mode: 0644
+
+    - name: Run chroot; locale-gen
+      ansible.builtin.command:
+        cmd: arch-chroot /mnt/root locale-gen
+        creates: /mnt/root/usr/lib/locale/locale-archive
+
+    - name: Copy locale.conf
+      ansible.builtin.copy:
+        src: files/locale.conf
+        dest: /mnt/root/etc/locale.conf
+        mode: 0644
+
+    - name: Set vconsole.conf
+      ansible.builtin.copy:
+        src: files/vconsole.conf
+        dest: /mnt/root/etc/vconsole.conf
+        mode: 0644
+
+    - name: Set hostname
+      ansible.builtin.copy:
+        content: "{{ inventory_hostname }}\n"
+        dest: /mnt/root/etc/hostname
+        mode: 0644
+
+    - name: Run chroot; bootctl install
+      ansible.builtin.command:
+        cmd: arch-chroot /mnt/root bootctl install
+        creates: /mnt/root/boot/EFI/BOOT/BOOTX64.EFI
+
+    - name: Configure systemd-boot
+      ansible.builtin.copy:
+        src: files/boot-entries/
+        dest: /mnt/root/boot/loader/entries
+        mode: 0755
+
+    - name: Configure mkinitcpio.conf
+      ansible.builtin.lineinfile:
+        path: /mnt/root/etc/mkinitcpio.conf
+        regexp: '^HOOKS=(.*)$'
+        line: HOOKS=(base systemd keyboard autodetect sd-vconsole modconf block sd-encrypt filesystems fsck)
+
+    - name: Register crypted install disk uuid
+      ansible.builtin.parted: "device=/{{ install_disk }}2"
+      register: parted_install_disk
+
+    - name: Register crypted disk uuid
+      ansible.builtin.shell:
+        cmd: blkid --output=value {{ install_disk }}2 | head -n1
+      register: crypted_uuid
+      changed_when: false
+
+    - name: Install crypttab.initramfs
+      ansible.builtin.copy:
+        content: "cryptroot UUID={{ crypted_uuid.stdout }} none discard\n"
+        dest: /mnt/root/etc/crypttab.initramfs
+        mode: 0644
+
+    - name: Run chroot; mkinitramfs
+      ansible.builtin.command:
+        cmd: arch-chroot /mnt/root mkinitcpio -P # -P=allpresets
+      changed_when: true
+      # when: false # FIXME
+
+    - name: Create user account
+      ansible.builtin.command:
+        cmd: >
+          arch-chroot /mnt/root useradd
+          --uid 1000
+          --create-home
+          --user-group
+          --shell /bin/zsh
+          --groups wheel {{ user_account }}
+          --password {{ user_password | password_hash('sha512') }}
+        creates: "/mnt/root/home/{{ user_account }}"
+
+    - name: Create .ssh directory
+      ansible.builtin.file:
+        dest: "/mnt/root/home/{{ user_account }}/.ssh"
+        state: directory
+        mode: 0700
+        owner: 1000
+        group: 1000
+
+    - name: Install root's authorized keys
+      ansible.builtin.copy:
+        content: "{{ authorized_keys | join('\n') }}\n"
+        dest: /mnt/root/home/{{ user_account }}/.ssh/authorized_keys
+        mode: 0600
+        owner: 1000
+        group: 1000
+
+    - name: Configure sudo
+      ansible.builtin.lineinfile:
+        path: /mnt/root/etc/sudoers
+        regexp: '^#? ?%wheel ALL=\(ALL:ALL\) NOPASSWD: ALL$'
+        line: '%wheel ALL=(ALL:ALL) NOPASSWD: ALL'
+        validate: visudo -c -f %s

@@ -1,0 +1,10 @@
+---
+
+- name: Import 00-prerequisite.yaml
+  ansible.builtin.import_playbook: 00-prerequisite.yaml
+
+- name: Import 10-partition.yaml
+  ansible.builtin.import_playbook: 10-partition.yaml
+
+- name: Import 20-baseinstall.yaml
+  ansible.builtin.import_playbook: 20-baseinstall.yaml

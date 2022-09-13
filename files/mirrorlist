@@ -1,0 +1,2 @@
+Server = http://arch.mirror.far.fi/$repo/os/$arch
+Server = http://ftp.acc.umu.se/mirror/archlinux/$repo/os/$arch

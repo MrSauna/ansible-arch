@@ -1,0 +1,100 @@
+---
+
+- name: Install userspace files/progrems
+  hosts: arch
+  tasks:
+
+    - name: Install yay
+      block:
+
+        - name: Clone PKGBUILD
+          ansible.builtin.git:
+            repo: https://aur.archlinux.org/yay.git
+            dest: /tmp/yay
+            version: master
+
+        - name: Dirty repo sync without updating
+          ansible.builtin.command:
+            cmd: pacman -Sy
+          changed_when: true
+          become: true
+
+        - name: Run makepkg
+          ansible.builtin.command:
+            cmd: makepkg -si --noconfirm # Installs also
+            chdir: /tmp/yay
+            creates: /tmp/yay/yay*pkg*
+          when: not ansible_check_mode
+
+    - name: Register if default ssh key exists
+      ansible.builtin.stat:
+        path: .ssh/id_ed25519
+      register: ssh_key_stat
+
+    - name: Actions when default ssh keys does not exist
+      when: not ssh_key_stat.stat.exists
+      block:
+
+        - name: Create ssh key for user
+          ansible.builtin.command:
+            cmd: "ssh-keygen -t ed25519 -f .ssh/id_ed25519 -N {{ newsshkey_passphrase }}"
+          changed_when: not ssh_key_stat.stat.exists
+
+        - name: Slurp just generated public key
+          ansible.builtin.slurp:
+            src: .ssh/id_ed25519.pub
+          register: public_key_slurp_b64
+          when: not ansible_check_mode
+
+        - name: Decode slurp
+          ansible.builtin.set_fact:
+            public_key_slurp: "{{ public_key_slurp_b64['content'] | b64decode }}"
+          when: not ansible_check_mode
+
+        - name: Print just generated key
+          ansible.builtin.debug:
+            msg: "{{ public_key_slurp }}"
+          when: not ansible_check_mode
+
+        - name: Pause, manually install new ssh key to github
+          ansible.builtin.pause:
+            prompt: "https://github.com/settings/ssh/new"
+          when: not ansible_check_mode
+
+
+    - name: Copy .dotfiles
+      block:
+
+        - name: Copy auxiliary github ssh key
+          ansible.builtin.copy:
+            content: "{{ auxiliary_github_key }}"
+            dest: .ssh/github
+            mode: 0600
+
+        - name: Copy .dotfiles using auxilary ssh key
+          ansible.builtin.git:
+            repo: git@github.com:MrSauna/.dotfiles.git
+            dest: .dotfiles
+            version: master
+            key_file: ~/.ssh/github
+            accept_newhostkey: true
+          when: not ansible_check_mode
+
+    - name: Install pkglist.txt from .dotfiles
+      ansible.builtin.shell:
+        cmd: yay -Syu --needed --noconfirm --nocleanmenu --nodiffmenu - < ~/.dotfiles/pkglist.txt
+      changed_when: true
+
+    - name: Stow-all the first time
+      block:
+
+        - name: Register if stowed .zshrc
+          ansible.builtin.stat:
+            path: .zshrc
+          register: dot_zshrc
+
+        - name: Stow all when dot_zshrc doesn't exist
+          ansible.builtin.command:
+            cmd: ./stow-all.sh
+            chdir: .dotfiles
+          when: not dot_zshrc.stat.exists
